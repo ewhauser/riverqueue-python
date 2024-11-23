@@ -9,25 +9,6 @@ from typing import Any, Iterator, List, Optional, Protocol
 from ..job import Job
 
 
-@dataclass()
-class JobGetByKindAndUniquePropertiesParam:
-    """
-    Parameters for looking up a job by kind and unique properties.
-    """
-
-    kind: str
-    by_args: Optional[bool] = None
-    args: Optional[Any] = None
-    by_created_at: Optional[bool] = None
-    created_at: Optional[List[datetime]] = None
-    created_at_begin: Optional[datetime] = None
-    created_at_end: Optional[datetime] = None
-    by_queue: Optional[bool] = None
-    queue: Optional[str] = None
-    by_state: Optional[bool] = None
-    state: Optional[List[str]] = None
-
-
 @dataclass
 class JobInsertParams:
     """
@@ -46,6 +27,19 @@ class JobInsertParams:
     scheduled_at: Optional[datetime] = None
     state: str = field(default="available")
     tags: list[str] = field(default_factory=list)
+    unique_key: Optional[memoryview] = None
+    unique_state: Optional[int] = None
+
+
+@dataclass
+class JobInsertResult:
+    """
+    Result of inserting a job. This is sent to underlying drivers and is meant
+    for internal use only. Its interface is subject to change.
+    """
+
+    job: Job
+    unique_skipped_as_duplicated: bool
 
 
 class AsyncExecutorProtocol(Protocol):
@@ -58,20 +52,10 @@ class AsyncExecutorProtocol(Protocol):
     async def advisory_lock(self, lock: int) -> None:
         pass
 
-    async def job_insert(self, insert_params: JobInsertParams) -> Job:
+    async def job_insert_many(self, all_params) -> List[JobInsertResult]:
         pass
 
-    async def job_insert_many(self, all_params) -> int:
-        pass
-
-    async def job_insert_unique(
-        self, insert_params: JobInsertParams, unique_key: bytes
-    ) -> tuple[Job, bool]:
-        pass
-
-    async def job_get_by_kind_and_unique_properties(
-        self, get_params: JobGetByKindAndUniquePropertiesParam
-    ) -> Optional[Job]:
+    async def job_insert_many_no_returning(self, all_params) -> int:
         pass
 
     # Even after spending two hours on it, I'm unable to find a return type for
@@ -136,20 +120,10 @@ class ExecutorProtocol(Protocol):
     def advisory_lock(self, lock: int) -> None:
         pass
 
-    def job_insert(self, insert_params: JobInsertParams) -> Job:
+    def job_insert_many(self, all_params) -> List[JobInsertResult]:
         pass
 
-    def job_insert_many(self, all_params) -> int:
-        pass
-
-    def job_insert_unique(
-        self, insert_params: JobInsertParams, unique_key: bytes
-    ) -> tuple[Job, bool]:
-        pass
-
-    def job_get_by_kind_and_unique_properties(
-        self, get_params: JobGetByKindAndUniquePropertiesParam
-    ) -> Optional[Job]:
+    def job_insert_many_no_returning(self, all_params) -> int:
         pass
 
     @contextmanager

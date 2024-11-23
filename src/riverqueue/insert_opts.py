@@ -140,3 +140,44 @@ class UniqueOpts:
     discarded, but not yet cleaned out by the system, won't count towards the
     uniqueness of a new insert.
     """
+
+    # When a job has specified unique options, but has not set the ByState
+    # parameter explicitly, this is the set of default states that are used to
+    # determine uniqueness. So for example, a new unique job may be inserted even
+    # if another job already exists, as long as that other job is set `cancelled`
+    # or `discarded`.
+    _default_unique_states = [
+        "available",
+        "completed",
+        "pending",
+        "retryable",
+        "running",
+        "scheduled",
+    ]
+
+    _job_state_bit_positions = {
+        "available": 7,
+        "cancelled": 6,
+        "completed": 5,
+        "discarded": 4,
+        "pending": 3,
+        "retryable": 2,
+        "running": 1,
+        "scheduled": 0,
+    }
+
+    def state_bitmask(self) -> int:
+        """
+        Generate a bitmask for the given states.
+        If no states are provided, the default unique states are used.
+        """
+        states: list[JobState] | list[str] = self.by_state if self.by_state else self._default_unique_states
+        bitmask = 0
+
+        for state in states:
+            bit_index = self._job_state_bit_positions.get(state)
+            if bit_index is not None:
+                bit_position = 7 - (bit_index % 8)
+                bitmask |= 1 << bit_position
+
+        return bitmask

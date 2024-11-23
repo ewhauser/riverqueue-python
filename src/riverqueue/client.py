@@ -11,10 +11,11 @@ from typing import (
     runtime_checkable,
 )
 
+import hashlib
+
 from riverqueue.insert_opts import InsertOpts, UniqueOpts
 
 from .driver import (
-    JobGetByKindAndUniquePropertiesParam,
     JobInsertParams,
     DriverProtocol,
     ExecutorProtocol,
@@ -201,11 +202,10 @@ class AsyncClient:
         """
 
         async with self.driver.executor() as exec:
-            if not insert_opts:
-                insert_opts = InsertOpts()
-            insert_params, unique_opts = _make_driver_insert_params(args, insert_opts)
-
-            return await self.__insert_job_with_unique(exec, insert_params, unique_opts)
+            if insert_opts:
+                setattr(args, 'insert_opts', insert_opts)
+            res = await exec.job_insert_many(_make_driver_insert_params_many([args]))
+            return cast(InsertResult, res[0])
 
     async def insert_tx(
         self, tx, args: JobArgs, insert_opts: Optional[InsertOpts] = None
@@ -241,13 +241,12 @@ class AsyncClient:
                 insert_res.job # inserted job row
             ```
         """
+        if insert_opts:
+            setattr(args, 'insert_opts', insert_opts)
 
         exec = self.driver.unwrap_executor(tx)
-        if not insert_opts:
-            insert_opts = InsertOpts()
-        insert_params, unique_opts = _make_driver_insert_params(args, insert_opts)
-
-        return await self.__insert_job_with_unique(exec, insert_params, unique_opts)
+        res = await exec.job_insert_many(_make_driver_insert_params_many([args]))
+        return cast(InsertResult, res[0])
 
     async def insert_many(self, args: List[JobArgs | InsertManyParams]) -> int:
         """
@@ -282,7 +281,7 @@ class AsyncClient:
         """
 
         async with self.driver.executor() as exec:
-            return await exec.job_insert_many(_make_driver_insert_params_many(args))
+            return await exec.job_insert_many_no_returning(_make_driver_insert_params_many(args))
 
     async def insert_many_tx(self, tx, args: List[JobArgs | InsertManyParams]) -> int:
         """
@@ -316,52 +315,7 @@ class AsyncClient:
         """
 
         exec = self.driver.unwrap_executor(tx)
-        return await exec.job_insert_many(_make_driver_insert_params_many(args))
-
-    async def __insert_job_with_unique(
-        self,
-        exec: AsyncExecutorProtocol,
-        insert_params: JobInsertParams,
-        unique_opts: Optional[UniqueOpts],
-    ) -> InsertResult:
-        """
-        Inserts a job, accounting for unique jobs whose insertion may be skipped
-        if an equivalent job is already present.
-        """
-
-        get_params, unique_key = _build_unique_get_params_and_unique_key(
-            insert_params, unique_opts
-        )
-
-        if not get_params or not unique_opts:
-            return InsertResult(await exec.job_insert(insert_params))
-
-        # fast path
-        if (
-            not unique_opts.by_state
-            or unique_opts.by_state.sort == UNIQUE_STATES_DEFAULT
-        ):
-            job, unique_skipped_as_duplicate = await exec.job_insert_unique(
-                insert_params, sha256(unique_key.encode("utf-8")).digest()
-            )
-            return InsertResult(
-                job=job, unique_skipped_as_duplicated=unique_skipped_as_duplicate
-            )
-
-        async with exec.transaction():
-            lock_key = "unique_key"
-            lock_key += "kind=#{insert_params.kind}"
-            lock_key += unique_key
-
-            await exec.advisory_lock(
-                _hash_lock_key(self.advisory_lock_prefix, lock_key)
-            )
-
-            existing_job = await exec.job_get_by_kind_and_unique_properties(get_params)
-            if existing_job:
-                return InsertResult(existing_job, unique_skipped_as_duplicated=True)
-
-            return InsertResult(await exec.job_insert(insert_params))
+        return await exec.job_insert_many_no_returning(_make_driver_insert_params_many(args))
 
 
 class Client:
@@ -453,13 +407,12 @@ class Client:
 
         Returns an instance of `InsertResult`.
         """
+        if insert_opts:
+            setattr(args, 'insert_opts', insert_opts)
 
         with self.driver.executor() as exec:
-            if not insert_opts:
-                insert_opts = InsertOpts()
-            insert_params, unique_opts = _make_driver_insert_params(args, insert_opts)
-
-            return self.__insert_job_with_unique(exec, insert_params, unique_opts)
+            res = exec.job_insert_many(_make_driver_insert_params_many([args]))
+            return cast(InsertResult, list(res)[0])
 
     def insert_tx(
         self, tx, args: JobArgs, insert_opts: Optional[InsertOpts] = None
@@ -495,13 +448,11 @@ class Client:
                 insert_res.job # inserted job row
             ```
         """
-
+        if insert_opts:
+            setattr(args, 'insert_opts', insert_opts)
         exec = self.driver.unwrap_executor(tx)
-        if not insert_opts:
-            insert_opts = InsertOpts()
-        insert_params, unique_opts = _make_driver_insert_params(args, insert_opts)
-
-        return self.__insert_job_with_unique(exec, insert_params, unique_opts)
+        res = exec.job_insert_many(_make_driver_insert_params_many([args]))
+        return cast(InsertResult, list(res)[0])
 
     def insert_many(self, args: List[JobArgs | InsertManyParams]) -> int:
         """
@@ -536,7 +487,7 @@ class Client:
         """
 
         with self.driver.executor() as exec:
-            return exec.job_insert_many(_make_driver_insert_params_many(args))
+            return exec.job_insert_many_no_returning(_make_driver_insert_params_many(args))
 
     def insert_many_tx(self, tx, args: List[JobArgs | InsertManyParams]) -> int:
         """
@@ -570,107 +521,7 @@ class Client:
         """
 
         exec = self.driver.unwrap_executor(tx)
-        return exec.job_insert_many(_make_driver_insert_params_many(args))
-
-    def __insert_job_with_unique(
-        self,
-        exec: ExecutorProtocol,
-        insert_params: JobInsertParams,
-        unique_opts: Optional[UniqueOpts],
-    ) -> InsertResult:
-        """
-        Inserts a job, accounting for unique jobs whose insertion may be skipped
-        if an equivalent job is already present.
-        """
-
-        get_params, unique_key = _build_unique_get_params_and_unique_key(
-            insert_params, unique_opts
-        )
-
-        if not get_params or not unique_opts:
-            return InsertResult(exec.job_insert(insert_params))
-
-        # fast path
-        if (
-            not unique_opts.by_state
-            or unique_opts.by_state.sort == UNIQUE_STATES_DEFAULT
-        ):
-            job, unique_skipped_as_duplicate = exec.job_insert_unique(
-                insert_params, sha256(unique_key.encode("utf-8")).digest()
-            )
-            return InsertResult(
-                job=job, unique_skipped_as_duplicated=unique_skipped_as_duplicate
-            )
-
-        with exec.transaction():
-            lock_key = "unique_key"
-            lock_key += "kind=#{insert_params.kind}"
-            lock_key += unique_key
-
-            exec.advisory_lock(_hash_lock_key(self.advisory_lock_prefix, lock_key))
-
-            existing_job = exec.job_get_by_kind_and_unique_properties(get_params)
-            if existing_job:
-                return InsertResult(existing_job, unique_skipped_as_duplicated=True)
-
-            return InsertResult(exec.job_insert(insert_params))
-
-
-def _build_unique_get_params_and_unique_key(
-    insert_params: JobInsertParams,
-    unique_opts: Optional[UniqueOpts],
-) -> tuple[Optional[JobGetByKindAndUniquePropertiesParam], str]:
-    """
-    Builds driver get params and an advisory lock key from insert params and
-    unique options for use during a unique job insertion.
-    """
-
-    if unique_opts is None:
-        return (None, "")
-
-    any_unique_opts = False
-    get_params = JobGetByKindAndUniquePropertiesParam(kind=insert_params.kind)
-
-    unique_key = ""
-
-    if unique_opts.by_args:
-        any_unique_opts = True
-        get_params.by_args = True
-        get_params.args = insert_params.args
-        unique_key += f"&args={insert_params.args}"
-
-    if unique_opts.by_period:
-        lower_period_bound = _truncate_time(
-            datetime.now(timezone.utc), unique_opts.by_period
-        )
-
-        any_unique_opts = True
-        get_params.by_created_at = True
-        get_params.created_at = [
-            lower_period_bound,
-            lower_period_bound + timedelta(seconds=unique_opts.by_period),
-        ]
-        unique_key += f"&period={lower_period_bound.strftime('%FT%TZ')}"
-
-    if unique_opts.by_queue:
-        any_unique_opts = True
-        get_params.by_queue = True
-        get_params.queue = insert_params.queue
-        unique_key += f"&queue={insert_params.queue}"
-
-    if unique_opts.by_state:
-        any_unique_opts = True
-        get_params.by_state = True
-        get_params.state = cast(list[str], unique_opts.by_state)
-        unique_key += f"&state={','.join(unique_opts.by_state)}"
-    else:
-        get_params.state = UNIQUE_STATES_DEFAULT
-        unique_key += f"&state={','.join(UNIQUE_STATES_DEFAULT)}"
-
-    if not any_unique_opts:
-        return (None, "")
-
-    return (get_params, unique_key)
+        return exec.job_insert_many_no_returning(_make_driver_insert_params_many(args))
 
 
 def _check_advisory_lock_prefix_bounds(
@@ -707,11 +558,13 @@ def _make_driver_insert_params(
     args: JobArgs,
     insert_opts: InsertOpts,
     is_insert_many: bool = False,
-) -> Tuple[JobInsertParams, Optional[UniqueOpts]]:
+) -> JobInsertParams:
     """
     Converts user-land job args and insert options to insert params for an
     underlying driver.
     """
+    if not insert_opts:
+        insert_opts = InsertOpts()
 
     args.kind  # fail fast in case args don't respond to kind
 
@@ -720,13 +573,13 @@ def _make_driver_insert_params(
 
     args_insert_opts = InsertOpts()
     if isinstance(args, JobArgsWithInsertOpts):
-        args_insert_opts = args.insert_opts()
+        args_insert_opts = args.insert_opts
 
     scheduled_at = insert_opts.scheduled_at or args_insert_opts.scheduled_at
     unique_opts = insert_opts.unique_opts or args_insert_opts.unique_opts
 
-    if is_insert_many and unique_opts:
-        raise ValueError("unique opts can't be used with `insert_many`")
+    unique_key = create_unique_key(args, insert_opts, unique_opts)
+    unique_state = unique_opts.state_bitmask() if unique_opts else None
 
     insert_params = JobInsertParams(
         args=args_json,
@@ -739,10 +592,31 @@ def _make_driver_insert_params(
         scheduled_at=scheduled_at and scheduled_at.astimezone(timezone.utc),
         state="scheduled" if scheduled_at else "available",
         tags=_validate_tags(insert_opts.tags or args_insert_opts.tags or []),
+        unique_key=unique_key,
+        unique_state=unique_state,
     )
 
-    return insert_params, unique_opts
+    return insert_params
 
+def create_unique_key(args, insert_opts, unique_opts) -> Optional[memoryview]:
+    if not unique_opts:
+        return None
+
+    unique_key = ""
+    if unique_opts.by_args:
+        unique_key += f"&args={args}"
+    if unique_opts.by_period:
+        lower_period_bound = _truncate_time(
+            datetime.now(timezone.utc), unique_opts.by_period
+        )
+        unique_key += f"&period={lower_period_bound.strftime('%FT%TZ')}"
+    if unique_opts.by_queue:
+        unique_key += f"&queue={insert_opts.queue}"
+        unique_key += f"&state={','.join(UNIQUE_STATES_DEFAULT)}"
+
+    hash_object = hashlib.sha256(unique_key.encode('utf-8'))
+    hashed_key = hash_object.hexdigest()
+    return memoryview(hashed_key.encode('utf-8'))
 
 def _make_driver_insert_params_many(
     args: List[JobArgs | InsertManyParams],
@@ -750,9 +624,9 @@ def _make_driver_insert_params_many(
     return [
         _make_driver_insert_params(
             arg.args, arg.insert_opts or InsertOpts(), is_insert_many=True
-        )[0]
+        )
         if isinstance(arg, InsertManyParams)
-        else _make_driver_insert_params(arg, InsertOpts(), is_insert_many=True)[0]
+        else _make_driver_insert_params(arg, InsertOpts(), is_insert_many=True)
         for arg in args
     ]
 

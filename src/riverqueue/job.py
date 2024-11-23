@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import json
-from typing import Any, Optional
+from typing import Any, Optional, List
 
 
 class JobState(str, Enum):
@@ -80,6 +80,7 @@ class JobState(str, Enum):
 	The job scheduler service changes them to `AVAILABLE` when they're ready to
 	be worked (their `scheduled_at` timestamp comes due).
     """
+
 
 
 @dataclass

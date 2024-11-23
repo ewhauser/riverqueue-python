@@ -11,7 +11,7 @@ CREATE TYPE river_job_state AS ENUM(
 
 CREATE TABLE river_job(
     id bigserial PRIMARY KEY,
-    args jsonb NOT NULL DEFAULT '{}'::jsonb,
+    args jsonb NOT NULL DEFAULT '{}',
     attempt smallint NOT NULL DEFAULT 0,
     attempted_at timestamptz,
     attempted_by text[],
@@ -20,14 +20,14 @@ CREATE TABLE river_job(
     finalized_at timestamptz,
     kind text NOT NULL,
     max_attempts smallint NOT NULL,
-    metadata jsonb NOT NULL DEFAULT '{}' ::jsonb,
+    metadata jsonb NOT NULL DEFAULT '{}',
     priority smallint NOT NULL DEFAULT 1,
-    queue text NOT NULL DEFAULT 'default' ::text,
-    state river_job_state NOT NULL DEFAULT 'available' ::river_job_state,
+    queue text NOT NULL DEFAULT 'default',
+    state river_job_state NOT NULL DEFAULT 'available',
     scheduled_at timestamptz NOT NULL DEFAULT NOW(),
-    tags varchar(255)[] NOT NULL DEFAULT '{}' ::varchar(255)[],
+    tags varchar(255)[] NOT NULL DEFAULT '{}',
     unique_key bytea,
-
+    unique_states bit(8),
     CONSTRAINT finalized_or_finalized_at_null CHECK (
         (finalized_at IS NULL AND state NOT IN ('cancelled', 'completed', 'discarded')) OR
         (finalized_at IS NOT NULL AND state IN ('cancelled', 'completed', 'discarded'))
@@ -46,47 +46,9 @@ SELECT *
 FROM river_job
 WHERE id = @id;
 
--- name: JobGetByKindAndUniqueProperties :one
-SELECT *
-FROM river_job
-WHERE kind = @kind
-    AND CASE WHEN @by_args::boolean THEN args = @args ELSE true END
-    AND CASE WHEN @by_created_at::boolean THEN tstzrange(@created_at_begin::timestamptz, @created_at_end::timestamptz, '[)') @> created_at ELSE true END
-    AND CASE WHEN @by_queue::boolean THEN queue = @queue ELSE true END
-    AND CASE WHEN @by_state::boolean THEN state::text = any(@state::text[]) ELSE true END;
-
--- name: JobInsertFast :one
+-- name: JobInsertFastMany :many
 INSERT INTO river_job(
     args,
-    created_at,
-    finalized_at,
-    kind,
-    max_attempts,
-    metadata,
-    priority,
-    queue,
-    scheduled_at,
-    state,
-    tags
-) VALUES (
-    @args::jsonb,
-    coalesce(sqlc.narg('created_at')::timestamptz, now()),
-    @finalized_at,
-    @kind::text,
-    @max_attempts::smallint,
-    coalesce(@metadata::jsonb, '{}'),
-    @priority::smallint,
-    @queue::text,
-    coalesce(sqlc.narg('scheduled_at')::timestamptz, now()),
-    @state::river_job_state,
-    coalesce(@tags::varchar(255)[], '{}')
-) RETURNING *;
-
--- name: JobInsertUnique :one
-INSERT INTO river_job(
-    args,
-    created_at,
-    finalized_at,
     kind,
     max_attempts,
     metadata,
@@ -95,27 +57,36 @@ INSERT INTO river_job(
     scheduled_at,
     state,
     tags,
-    unique_key
-) VALUES (
-    @args,
-    coalesce(sqlc.narg('created_at')::timestamptz, now()),
-    @finalized_at,
-    @kind,
-    @max_attempts,
-    coalesce(@metadata::jsonb, '{}'),
-    @priority,
-    @queue,
-    coalesce(sqlc.narg('scheduled_at')::timestamptz, now()),
-    @state,
-    coalesce(@tags::varchar(255)[], '{}'),
-    @unique_key
-)
-ON CONFLICT (kind, unique_key) WHERE unique_key IS NOT NULL
+    unique_key,
+    unique_states
+) SELECT
+    unnest(@args::jsonb[]),
+    unnest(@kind::text[]),
+    unnest(@max_attempts::smallint[]),
+    unnest(@metadata::jsonb[]),
+    unnest(@priority::smallint[]),
+    unnest(@queue::text[]),
+    unnest(@scheduled_at::timestamptz[]),
+    -- To avoid requiring pgx users to register the OID of the river_job_state[]
+    -- type, we cast the array to text[] and then to river_job_state.
+    unnest(@state::text[])::river_job_state,
+    -- Unnest on a multi-dimensional array will fully flatten the array, so we
+    -- encode the tag list as a comma-separated string and split it in the
+    -- query.
+    string_to_array(unnest(@tags::text[]), ','),
+
+    unnest(@unique_key::bytea[]),
+    unnest(@unique_states::bit(8)[])
+
+ON CONFLICT (unique_key)
+    WHERE unique_key IS NOT NULL
+      AND unique_states IS NOT NULL
+      AND river_job_state_in_bitmask(unique_states, state)
     -- Something needs to be updated for a row to be returned on a conflict.
     DO UPDATE SET kind = EXCLUDED.kind
-RETURNING *, (xmax != 0) AS unique_skipped_as_duplicate;
+RETURNING sqlc.embed(river_job), (xmax != 0) AS unique_skipped_as_duplicate;
 
--- name: JobInsertFastMany :execrows
+-- name: JobInsertFastManyNoReturning :execrows
 INSERT INTO river_job(
     args,
     kind,
@@ -125,7 +96,9 @@ INSERT INTO river_job(
     queue,
     scheduled_at,
     state,
-    tags
+    tags,
+    unique_key,
+    unique_states
 ) SELECT
     unnest(@args::jsonb[]),
     unnest(@kind::text[]),
@@ -135,10 +108,15 @@ INSERT INTO river_job(
     unnest(@queue::text[]),
     unnest(@scheduled_at::timestamptz[]),
     unnest(@state::river_job_state[]),
+    string_to_array(unnest(@tags::text[]), ','),
+    unnest(@unique_key::bytea[]),
+    unnest(@unique_states::bit(8)[])
 
-    -- Had trouble getting multi-dimensional arrays to play nicely with sqlc,
-    -- but it might be possible. For now, join tags into a single string.
-    string_to_array(unnest(@tags::text[]), ',');
+ON CONFLICT (unique_key)
+    WHERE unique_key IS NOT NULL
+      AND unique_states IS NOT NULL
+      AND river_job_state_in_bitmask(unique_states, state)
+DO NOTHING;
 
 -- name: JobInsertFull :one
 INSERT INTO river_job(
@@ -156,21 +134,23 @@ INSERT INTO river_job(
     scheduled_at,
     state,
     tags,
-    unique_key
+    unique_key,
+    unique_states
 ) VALUES (
     @args::jsonb,
     coalesce(@attempt::smallint, 0),
     @attempted_at,
     coalesce(sqlc.narg('created_at')::timestamptz, now()),
-    @errors::jsonb[],
+    @errors,
     @finalized_at,
-    @kind::text,
+    @kind,
     @max_attempts::smallint,
     coalesce(@metadata::jsonb, '{}'),
-    @priority::smallint,
-    @queue::text,
+    @priority,
+    @queue,
     coalesce(sqlc.narg('scheduled_at')::timestamptz, now()),
-    @state::river_job_state,
+    @state,
     coalesce(@tags::varchar(255)[], '{}'),
-    @unique_key
+    @unique_key,
+    @unique_states
 ) RETURNING *;

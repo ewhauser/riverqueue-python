@@ -1,6 +1,8 @@
 import json
 import pytest
 import pytest_asyncio
+
+from riverqueue.driver.riversqlalchemy.dbsqlc.models import RiverJobState
 from riverqueue.job import AttemptError
 import sqlalchemy
 import sqlalchemy.ext.asyncio
@@ -104,9 +106,10 @@ class TestAsyncClient:
                 priority=PRIORITY_DEFAULT,
                 queue=QUEUE_DEFAULT,
                 scheduled_at=datetime.now(),
-                state=JobState.COMPLETED,
+                state=RiverJobState.COMPLETED,
                 tags=[],
-                unique_key=b"unique_key",
+                unique_key=memoryview(b"unique_key"),
+                unique_states=65,
             )
         )
 
@@ -338,8 +341,6 @@ class TestSyncClient:
         assert insert_res.job
 
     def test_insert_with_unique_opts_by_args(self, client, simple_args):
-        print("self", self)
-        print("client", client)
         insert_opts = InsertOpts(unique_opts=UniqueOpts(by_args=True))
 
         insert_res = client.insert(simple_args, insert_opts=insert_opts)
@@ -347,8 +348,8 @@ class TestSyncClient:
         assert not insert_res.unique_skipped_as_duplicated
 
         insert_res2 = client.insert(simple_args, insert_opts=insert_opts)
-        assert insert_res2.job == insert_res.job
         assert insert_res2.unique_skipped_as_duplicated
+        assert insert_res2.job == insert_res.job
 
     @patch("datetime.datetime")
     def test_insert_with_unique_opts_by_period(

@@ -2,8 +2,8 @@ version: "2"
 plugins:
   - name: "py"
     wasm:
-      url: "https://downloads.sqlc.dev/plugin/sqlc-gen-python_1.0.0.wasm"
-      sha256: "aca83e1f59f8ffdc604774c2f6f9eb321a2b23e07dc83fc12289d25305fa065b"
+      url: "https://github.com/ewhauser/sqlc-gen-python/releases/download/v1.2.0-embed/sqlc-gen-python.wasm"
+      sha256: "a87b914a76aee5ebc4ce9b21cfd59ee2615f2b702aa1bc075701f16cf0bb127e"
 sql:
   - schema:
       - pg_misc.sql

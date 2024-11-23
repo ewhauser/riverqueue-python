@@ -37,3 +37,34 @@ verify: verify/sqlc
 .PHONY: verify/sqlc
 verify/sqlc: # Verify sqlc code
 	cd src/riverqueue/driver/riversqlalchemy/dbsqlc && sqlc verify
+
+.PHONY: setup-db
+setup-db:
+	@if [ $$(docker ps -aq -f name=local-postgres-no-password) ]; then \
+	  echo "Stopping and removing existing Docker container..."; \
+	  docker stop local-postgres-no-password >/dev/null; \
+	  docker rm local-postgres-no-password >/dev/null; \
+	fi
+
+	@echo "Starting PostgreSQL container..."
+	docker run --name local-postgres-no-password -d \
+	  -e POSTGRES_HOST_AUTH_METHOD=trust \
+	  -p 5432:5432 \
+	  postgres:latest
+
+	@echo "Waiting for PostgreSQL to start..."
+	sleep 5
+	
+	@echo "Creating PostgreSQL role for user $(USER)..."
+	docker exec -i local-postgres-no-password psql -U postgres -c "CREATE ROLE $(USER) WITH LOGIN SUPERUSER;"
+
+	@echo "Creating the river_test database..."
+	docker exec -i local-postgres-no-password psql -U postgres -c "CREATE DATABASE river_test OWNER $(USER);"
+
+	@echo "Installing the River CLI..."
+	go install github.com/riverqueue/river/cmd/river@latest
+
+	@echo "Running migrations..."
+	river migrate-up --database-url "postgres://$(USER)@127.0.0.1:5432/river_test"
+
+	@echo "Database setup complete!"
