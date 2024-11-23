@@ -23,7 +23,7 @@ def engine_opts() -> dict:
 
 
 @pytest.fixture(scope="session")
-def engine() -> sqlalchemy.Engine:
+def engine():
     return sqlalchemy.create_engine(test_database_url(), **engine_opts())
 
 

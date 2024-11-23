@@ -1,15 +1,9 @@
 from contextlib import (
-    asynccontextmanager,
     contextmanager,
 )
 from datetime import datetime, timezone
-from riverqueue.driver.driver_protocol import AsyncDriverProtocol, AsyncExecutorProtocol
-from sqlalchemy import Engine
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from typing import (
-    AsyncGenerator,
-    AsyncIterator,
     Iterator,
     Optional,
     cast, List, TypeVar, Type,
@@ -25,59 +19,6 @@ from ...job import AttemptError, Job, JobState
 from .dbsqlc import models, river_job, pg_misc
 
 T = TypeVar("T", river_job.JobInsertFastManyParams, river_job.JobInsertFastManyNoReturningParams)
-
-
-class AsyncExecutor(AsyncExecutorProtocol):
-    def __init__(self, conn: AsyncConnection):
-        self.conn = conn
-        self.pg_misc_querier = pg_misc.AsyncQuerier(conn)
-        self.job_querier = river_job.AsyncQuerier(conn)
-
-    async def advisory_lock(self, key: int) -> None:
-        await self.pg_misc_querier.pg_advisory_xact_lock(key=key)
-
-    async def job_insert_many(self, all_params: list[JobInsertParams]) -> List[JobInsertResult]:
-        rows = [row async for row in self.job_querier.job_insert_fast_many(_build_insert_many_params(all_params))]
-        return [_result_from_row(row) for row in rows]
-
-    async def job_insert_many_no_returning(self, all_params: list[JobInsertParams]) -> int:
-        res = await self.job_querier.job_insert_fast_many_no_returning(
-            _build_insert_many_no_returning_params(all_params)
-        )
-        return res
-
-    @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator:
-        if self.conn.in_transaction():
-            async with self.conn.begin_nested():
-                yield
-        else:
-            async with self.conn.begin():
-                yield
-
-
-class AsyncDriver(AsyncDriverProtocol):
-    """
-    Client driver for SQL Alchemy.
-
-    This variant is suitable for use with Python's asyncio (asynchronous I/O).
-    """
-
-    def __init__(self, conn: AsyncConnection | AsyncEngine):
-        assert isinstance(conn, AsyncConnection) or isinstance(conn, AsyncEngine)
-
-        self.conn = conn
-
-    @asynccontextmanager
-    async def executor(self) -> AsyncIterator[AsyncExecutorProtocol]:
-        if isinstance(self.conn, AsyncEngine):
-            async with self.conn.begin() as tx:
-                yield AsyncExecutor(tx)
-        else:
-            yield AsyncExecutor(self.conn)
-
-    def unwrap_executor(self, tx) -> AsyncExecutorProtocol:
-        return AsyncExecutor(tx)
 
 
 class Executor(ExecutorProtocol):
@@ -112,18 +53,12 @@ class Driver(DriverProtocol):
     Client driver for SQL Alchemy.
     """
 
-    def __init__(self, conn: Connection | Engine):
-        assert isinstance(conn, Connection) or isinstance(conn, Engine)
-
+    def __init__(self, conn: Connection):
         self.conn = conn
 
     @contextmanager
     def executor(self) -> Iterator[ExecutorProtocol]:
-        if isinstance(self.conn, Engine):
-            with self.conn.begin() as tx:
-                yield Executor(tx)
-        else:
-            yield Executor(self.conn)
+        yield Executor(self.conn)
 
     def unwrap_executor(self, tx) -> ExecutorProtocol:
         return Executor(tx)

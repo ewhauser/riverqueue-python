@@ -4,7 +4,6 @@ from .client import (
     PRIORITY_DEFAULT as PRIORITY_DEFAULT,
     QUEUE_DEFAULT as QUEUE_DEFAULT,
     UNIQUE_STATES_DEFAULT as UNIQUE_STATES_DEFAULT,
-    AsyncClient as AsyncClient,
     JobArgs as JobArgs,
     JobArgsWithInsertOpts as JobArgsWithInsertOpts,
     Client as Client,

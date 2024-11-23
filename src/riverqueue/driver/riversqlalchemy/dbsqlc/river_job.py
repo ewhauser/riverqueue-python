@@ -4,10 +4,9 @@
 # source: river_job.sql
 import dataclasses
 import datetime
-from typing import Any, AsyncIterator, Iterator, List, Optional
+from typing import Any, Iterator, List, Optional
 
 import sqlalchemy
-import sqlalchemy.ext.asyncio
 
 from . import models
 
@@ -110,13 +109,7 @@ INSERT INTO river_job(
     unnest(:p6\\:\\:text[]),
     unnest(:p7\\:\\:timestamptz[]),
     unnest(:p8\\:\\:river_job_state[]),
-
-    -- lib/pq really, REALLY does not play nicely with multi-dimensional arrays,
-    -- so instead we pack each set of tags into a string, send them through,
-    -- then unpack them here into an array to put in each row. This isn't
-    -- necessary in the Pgx driver where copyfrom is used instead.
     string_to_array(unnest(:p9\\:\\:text[]), ','),
-
     unnest(:p10\\:\\:bytea[]),
     unnest(:p11\\:\\:bit(8)[])
 
@@ -329,157 +322,6 @@ class Querier:
             "p15": arg.unique_key,
             "p16": arg.unique_states,
         }).first()
-        if row is None:
-            return None
-        return models.RiverJob(
-            id=row[0],
-            args=row[1],
-            attempt=row[2],
-            attempted_at=row[3],
-            attempted_by=row[4],
-            created_at=row[5],
-            errors=row[6],
-            finalized_at=row[7],
-            kind=row[8],
-            max_attempts=row[9],
-            metadata=row[10],
-            priority=row[11],
-            queue=row[12],
-            state=row[13],
-            scheduled_at=row[14],
-            tags=row[15],
-            unique_key=row[16],
-            unique_states=row[17],
-        )
-
-
-class AsyncQuerier:
-    def __init__(self, conn: sqlalchemy.ext.asyncio.AsyncConnection):
-        self._conn = conn
-
-    async def job_get_all(self) -> AsyncIterator[models.RiverJob]:
-        result = await self._conn.stream(sqlalchemy.text(JOB_GET_ALL))
-        async for row in result:
-            yield models.RiverJob(
-                id=row[0],
-                args=row[1],
-                attempt=row[2],
-                attempted_at=row[3],
-                attempted_by=row[4],
-                created_at=row[5],
-                errors=row[6],
-                finalized_at=row[7],
-                kind=row[8],
-                max_attempts=row[9],
-                metadata=row[10],
-                priority=row[11],
-                queue=row[12],
-                state=row[13],
-                scheduled_at=row[14],
-                tags=row[15],
-                unique_key=row[16],
-                unique_states=row[17],
-            )
-
-    async def job_get_by_id(self, *, id: int) -> Optional[models.RiverJob]:
-        row = (await self._conn.execute(sqlalchemy.text(JOB_GET_BY_ID), {"p1": id})).first()
-        if row is None:
-            return None
-        return models.RiverJob(
-            id=row[0],
-            args=row[1],
-            attempt=row[2],
-            attempted_at=row[3],
-            attempted_by=row[4],
-            created_at=row[5],
-            errors=row[6],
-            finalized_at=row[7],
-            kind=row[8],
-            max_attempts=row[9],
-            metadata=row[10],
-            priority=row[11],
-            queue=row[12],
-            state=row[13],
-            scheduled_at=row[14],
-            tags=row[15],
-            unique_key=row[16],
-            unique_states=row[17],
-        )
-
-    async def job_insert_fast_many(self, arg: JobInsertFastManyParams) -> AsyncIterator[JobInsertFastManyRow]:
-        result = await self._conn.stream(sqlalchemy.text(JOB_INSERT_FAST_MANY), {
-            "p1": arg.args,
-            "p2": arg.kind,
-            "p3": arg.max_attempts,
-            "p4": arg.metadata,
-            "p5": arg.priority,
-            "p6": arg.queue,
-            "p7": arg.scheduled_at,
-            "p8": arg.state,
-            "p9": arg.tags,
-            "p10": arg.unique_key,
-            "p11": arg.unique_states,
-        })
-        async for row in result:
-            yield JobInsertFastManyRow(
-                river_job=models.RiverJob(
-                    id=row[0],
-                    args=row[1],
-                    attempt=row[2],
-                    attempted_at=row[3],
-                    attempted_by=row[4],
-                    created_at=row[5],
-                    errors=row[6],
-                    finalized_at=row[7],
-                    kind=row[8],
-                    max_attempts=row[9],
-                    metadata=row[10],
-                    priority=row[11],
-                    queue=row[12],
-                    state=row[13],
-                    scheduled_at=row[14],
-                    tags=row[15],
-                    unique_key=row[16],
-                    unique_states=row[17],
-                ),
-                unique_skipped_as_duplicate=row[18],
-            )
-
-    async def job_insert_fast_many_no_returning(self, arg: JobInsertFastManyNoReturningParams) -> int:
-        result = await self._conn.execute(sqlalchemy.text(JOB_INSERT_FAST_MANY_NO_RETURNING), {
-            "p1": arg.args,
-            "p2": arg.kind,
-            "p3": arg.max_attempts,
-            "p4": arg.metadata,
-            "p5": arg.priority,
-            "p6": arg.queue,
-            "p7": arg.scheduled_at,
-            "p8": arg.state,
-            "p9": arg.tags,
-            "p10": arg.unique_key,
-            "p11": arg.unique_states,
-        })
-        return result.rowcount
-
-    async def job_insert_full(self, arg: JobInsertFullParams) -> Optional[models.RiverJob]:
-        row = (await self._conn.execute(sqlalchemy.text(JOB_INSERT_FULL), {
-            "p1": arg.args,
-            "p2": arg.attempt,
-            "p3": arg.attempted_at,
-            "p4": arg.created_at,
-            "p5": arg.errors,
-            "p6": arg.finalized_at,
-            "p7": arg.kind,
-            "p8": arg.max_attempts,
-            "p9": arg.metadata,
-            "p10": arg.priority,
-            "p11": arg.queue,
-            "p12": arg.scheduled_at,
-            "p13": arg.state,
-            "p14": arg.tags,
-            "p15": arg.unique_key,
-            "p16": arg.unique_states,
-        })).first()
         if row is None:
             return None
         return models.RiverJob(

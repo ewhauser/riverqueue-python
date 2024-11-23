@@ -18,4 +18,4 @@ sql:
         options:
           package: "."
           emit_sync_querier: true
-          emit_async_querier: true
+          emit_async_querier: false

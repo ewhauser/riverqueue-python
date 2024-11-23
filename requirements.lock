@@ -10,7 +10,5 @@
 #   universal: false
 
 -e file:.
-sqlalchemy==2.0.30
+sqlalchemy==1.4.54
     # via riverqueue
-typing-extensions==4.12.1
-    # via sqlalchemy

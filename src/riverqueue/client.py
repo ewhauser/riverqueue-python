@@ -1,11 +1,9 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
-from hashlib import sha256
+from datetime import datetime, timezone
 import re
 from typing import (
     Optional,
     Protocol,
-    Tuple,
     List,
     cast,
     runtime_checkable,
@@ -20,7 +18,6 @@ from .driver import (
     DriverProtocol,
     ExecutorProtocol,
 )
-from .driver.driver_protocol import AsyncDriverProtocol, AsyncExecutorProtocol
 from .job import Job, JobState
 from .fnv import fnv1_hash
 
@@ -107,215 +104,6 @@ class InsertManyParams:
     """
     Insertion options to use with the insert.
     """
-
-
-class AsyncClient:
-    """
-    Provides a client for River that inserts jobs. Unlike the Go version of the
-    River client, this one can insert jobs only. Jobs can only be worked from Go
-    code, so job arg kinds and JSON encoding details must be shared between Ruby
-    and Go code.
-
-    Used in conjunction with a River driver like:
-
-        ```
-        import riverqueue
-        from riverqueue.driver import riversqlalchemy
-
-        engine = sqlalchemy.ext.asyncio.create_async_engine("postgresql+asyncpg://...")
-        client = riverqueue.AsyncClient(riversqlalchemy.AsyncDriver(engine))
-        ```
-
-    This variant is for use with Python's asyncio (asynchronous I/O).
-    """
-
-    def __init__(
-        self, driver: AsyncDriverProtocol, advisory_lock_prefix: Optional[int] = None
-    ):
-        self.driver = driver
-        self.advisory_lock_prefix = _check_advisory_lock_prefix_bounds(
-            advisory_lock_prefix
-        )
-
-    async def insert(
-        self, args: JobArgs, insert_opts: Optional[InsertOpts] = None
-    ) -> InsertResult:
-        """
-        Inserts a new job for work given a job args implementation and insertion
-        options (which may be omitted).
-
-        With job args only:
-
-            ```
-            insert_res = await client.insert(
-                SortArgs(strings=["whale", "tiger", "bear"]),
-            )
-            insert_res.job # inserted job row
-            ```
-
-        With insert opts:
-
-            ```
-            insert_res = await client.insert(
-                SortArgs(strings=["whale", "tiger", "bear"]),
-                insert_opts=riverqueue.InsertOpts(
-                    max_attempts=17,
-                    priority=3,
-                    queue: "my_queue",
-                    tags: ["custom"]
-                ),
-            )
-            insert_res.job # inserted job row
-            ```
-
-        Job arg implementations are expected to respond to:
-
-            * `kind` is a unique string that identifies them the job in the
-              database, and which a Go worker will recognize.
-
-            * `to_json()` defines how the job will serialize to JSON, which of
-              course will have to be parseable as an object in Go.
-
-        They may also respond to `insert_opts()` which is expected to return an
-        `InsertOpts` that contains options that will apply to all jobs of this
-        kind. Insertion options provided as an argument to `insert()` override
-        those returned by job args.
-
-        For example:
-
-            ```
-            @dataclass
-            class SortArgs:
-                strings: list[str]
-
-                kind: str = "sort"
-
-                def to_json(self) -> str:
-                    return json.dumps({"strings": self.strings})
-            ```
-
-        We recommend using `@dataclass` for job args since they should ideally
-        be minimal sets of primitive properties with little other embellishment,
-        and `@dataclass` provides a succinct way of accomplishing this.
-
-        Returns an instance of `InsertResult`.
-        """
-
-        async with self.driver.executor() as exec:
-            if insert_opts:
-                setattr(args, 'insert_opts', insert_opts)
-            res = await exec.job_insert_many(_make_driver_insert_params_many([args]))
-            return cast(InsertResult, res[0])
-
-    async def insert_tx(
-        self, tx, args: JobArgs, insert_opts: Optional[InsertOpts] = None
-    ) -> InsertResult:
-        """
-        Inserts a new job for work given a job args implementation and insertion
-        options (which may be omitted).
-
-        This variant inserts a job in an open transaction. For example:
-
-            ```
-            with engine.begin() as session:
-                insert_res = await client.insert_tx(
-                    session,
-                    SortArgs(strings=["whale", "tiger", "bear"]),
-                )
-            ```
-
-        With insert opts:
-
-            ```
-            with engine.begin() as session:
-                insert_res = await client.insert_tx(
-                    session,
-                    SortArgs(strings=["whale", "tiger", "bear"]),
-                    insert_opts=riverqueue.InsertOpts(
-                        max_attempts=17,
-                        priority=3,
-                        queue: "my_queue",
-                        tags: ["custom"]
-                    ),
-                )
-                insert_res.job # inserted job row
-            ```
-        """
-        if insert_opts:
-            setattr(args, 'insert_opts', insert_opts)
-
-        exec = self.driver.unwrap_executor(tx)
-        res = await exec.job_insert_many(_make_driver_insert_params_many([args]))
-        return cast(InsertResult, res[0])
-
-    async def insert_many(self, args: List[JobArgs | InsertManyParams]) -> int:
-        """
-        Inserts many new jobs as part of a single batch operation for improved
-        efficiency.
-
-        Takes an array of job args or `InsertManyParams` which encapsulate job
-        args and a paired `InsertOpts`.
-
-        With job args:
-
-            ```
-            num_inserted = await client.insert_many([
-                SimpleArgs(job_num: 1),
-                SimpleArgs(job_num: 2)
-            ])
-            ```
-
-        With `InsertManyParams`:
-
-            ```
-            num_inserted = await client.insert_many([
-                InsertManyParams(args=SimpleArgs.new(job_num: 1), insert_opts=riverqueue.InsertOpts.new(max_attempts=5)),
-                InsertManyParams(args=SimpleArgs.new(job_num: 2), insert_opts=riverqueue.InsertOpts.new(queue="high_priority"))
-            ])
-            ```
-
-        Unique job insertion isn't supported with bulk insertion because it'd
-        run the risk of major lock contention.
-
-        Returns the number of jobs inserted.
-        """
-
-        async with self.driver.executor() as exec:
-            return await exec.job_insert_many_no_returning(_make_driver_insert_params_many(args))
-
-    async def insert_many_tx(self, tx, args: List[JobArgs | InsertManyParams]) -> int:
-        """
-        Inserts many new jobs as part of a single batch operation for improved
-        efficiency.
-
-        This variant inserts a job in an open transaction. For example:
-
-            ```
-            with engine.begin() as session:
-                num_inserted = await client.insert_many_tx(session, [
-                    SimpleArgs(job_num: 1),
-                    SimpleArgs(job_num: 2)
-                ])
-            ```
-
-        With `InsertManyParams`:
-
-            ```
-            with engine.begin() as session:
-                num_inserted = await client.insert_many_tx(session, [
-                    InsertManyParams(args=SimpleArgs.new(job_num: 1), insert_opts=riverqueue.InsertOpts.new(max_attempts=5)),
-                    InsertManyParams(args=SimpleArgs.new(job_num: 2), insert_opts=riverqueue.InsertOpts.new(queue="high_priority"))
-                ])
-            ```
-
-        Unique job insertion isn't supported with bulk insertion because it'd
-        run the risk of major lock contention.
-
-        Returns the number of jobs inserted.
-        """
-
-        exec = self.driver.unwrap_executor(tx)
-        return await exec.job_insert_many_no_returning(_make_driver_insert_params_many(args))
 
 
 class Client:

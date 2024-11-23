@@ -5,7 +5,6 @@
 from typing import Any
 
 import sqlalchemy
-import sqlalchemy.ext.asyncio
 
 from . import models
 
@@ -21,11 +20,3 @@ class Querier:
 
     def pg_advisory_xact_lock(self, *, key: int) -> None:
         self._conn.execute(sqlalchemy.text(PG_ADVISORY_XACT_LOCK), {"p1": key})
-
-
-class AsyncQuerier:
-    def __init__(self, conn: sqlalchemy.ext.asyncio.AsyncConnection):
-        self._conn = conn
-
-    async def pg_advisory_xact_lock(self, *, key: int) -> None:
-        await self._conn.execute(sqlalchemy.text(PG_ADVISORY_XACT_LOCK), {"p1": key})

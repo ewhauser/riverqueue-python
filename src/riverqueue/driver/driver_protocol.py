@@ -1,5 +1,4 @@
 from contextlib import (
-    asynccontextmanager,
     contextmanager,
 )
 from dataclasses import dataclass, field
@@ -40,74 +39,6 @@ class JobInsertResult:
 
     job: Job
     unique_skipped_as_duplicated: bool
-
-
-class AsyncExecutorProtocol(Protocol):
-    """
-    Protocol for an asyncio executor. An executor wraps a connection pool or
-    transaction and performs the operations required for a client to insert a
-    job.
-    """
-
-    async def advisory_lock(self, lock: int) -> None:
-        pass
-
-    async def job_insert_many(self, all_params) -> List[JobInsertResult]:
-        pass
-
-    async def job_insert_many_no_returning(self, all_params) -> int:
-        pass
-
-    # Even after spending two hours on it, I'm unable to find a return type for
-    # this function that MyPy will accept. The only two workable options I found
-    # were either (1) removing the return value completely (the implementations
-    # still have one however), or (2) remove the `async` keyword, remove the
-    # `@asynccontextmanager` annotation, and use this return type:
-    #
-    #     -> _AsyncGeneratorContextManager
-    #
-    # I went with (1) because that seems preferable.
-    @asynccontextmanager
-    async def transaction(self):
-        """
-        Used as a context manager in a `with` block, open a transaction or
-        subtransaction for the given context. Commits automatically on exit, or
-        rolls back on error.
-        """
-
-        pass
-
-
-class AsyncDriverProtocol(Protocol):
-    """
-    Protocol for an asyncio client driver. A driver acts as a layer of
-    abstraction that wraps another class for a client to work.
-    """
-
-    # Even after spending two hours on it, I'm unable to find a return type for
-    # this function that MyPy will accept. The only two workable options I found
-    # were either (1) removing the return value completely (the implementations
-    # still have one however), or (2) remove the `async` keyword, remove the
-    # `@asynccontextmanager` annotation, and use this return type:
-    #
-    #     -> _AsyncGeneratorContextManager[AsyncExecutorProtocol]
-    #
-    # I went with (1) because that seems preferable.
-    @asynccontextmanager
-    async def executor(self):
-        """
-        Used as a context manager in a `with` block, return an executor from the
-        underlying engine that's good for the given context.
-        """
-
-        pass
-
-    def unwrap_executor(self, tx) -> AsyncExecutorProtocol:
-        """
-        Produces an executor from a transaction.
-        """
-
-        pass
 
 
 class ExecutorProtocol(Protocol):
