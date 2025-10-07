@@ -111,10 +111,8 @@ def _build_insert_params(
         )
         insert_many_params.state.append(cast(models.RiverJobState, insert_params.state))
         insert_many_params.tags.append(",".join(insert_params.tags))
-        if insert_params.unique_key:
-            insert_many_params.unique_key.append(insert_params.unique_key)
-        if insert_params.unique_state:
-            insert_many_params.unique_states.append(insert_params.unique_state)
+        insert_many_params.unique_key.append(insert_params.unique_key)
+        insert_many_params.unique_states.append(insert_params.unique_state)
 
     return insert_many_params
 
