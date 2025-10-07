@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 import re
 from typing import (
     Optional,
@@ -8,8 +10,6 @@ from typing import (
     cast,
     runtime_checkable,
 )
-
-import hashlib
 
 from riverqueue.insert_opts import InsertOpts, UniqueOpts
 
@@ -38,11 +38,12 @@ Default queue for a job.
 """
 
 UNIQUE_STATES_DEFAULT: list[str] = [
-    JobState.AVAILABLE,
-    JobState.COMPLETED,
-    JobState.RUNNING,
-    JobState.RETRYABLE,
-    JobState.SCHEDULED,
+    JobState.AVAILABLE.value,
+    JobState.COMPLETED.value,
+    JobState.PENDING.value,
+    JobState.RETRYABLE.value,
+    JobState.RUNNING.value,
+    JobState.SCHEDULED.value,
 ]
 """
 Default job states included during a unique job insertion.
@@ -365,9 +366,7 @@ def _make_driver_insert_params(
 
     scheduled_at = insert_opts.scheduled_at or args_insert_opts.scheduled_at
     unique_opts = insert_opts.unique_opts or args_insert_opts.unique_opts
-
-    unique_key = create_unique_key(args, insert_opts, unique_opts)
-    unique_state = unique_opts.state_bitmask() if unique_opts else None
+    queue = insert_opts.queue or args_insert_opts.queue or QUEUE_DEFAULT
 
     insert_params = JobInsertParams(
         args=args_json,
@@ -376,35 +375,75 @@ def _make_driver_insert_params(
         or args_insert_opts.max_attempts
         or MAX_ATTEMPTS_DEFAULT,
         priority=insert_opts.priority or args_insert_opts.priority or PRIORITY_DEFAULT,
-        queue=insert_opts.queue or args_insert_opts.queue or QUEUE_DEFAULT,
+        queue=queue,
         scheduled_at=scheduled_at and scheduled_at.astimezone(timezone.utc),
         state="scheduled" if scheduled_at else "available",
         tags=_validate_tags(insert_opts.tags or args_insert_opts.tags or []),
-        unique_key=unique_key,
-        unique_state=unique_state,
     )
+
+    if unique_opts:
+        unique_key, unique_state = _build_unique_key_and_state(insert_params, unique_opts)
+        insert_params.unique_key = unique_key
+        insert_params.unique_state = unique_state
 
     return insert_params
 
-def create_unique_key(args, insert_opts, unique_opts) -> Optional[memoryview]:
-    if not unique_opts:
-        return None
 
+def _build_unique_key_and_state(
+    insert_params: JobInsertParams, unique_opts: UniqueOpts
+) -> tuple[Optional[memoryview], Optional[int]]:
+    any_unique_opts = False
     unique_key = ""
+
+    # Always include kind for parity with upstream implementation
+    unique_key += f"&kind={insert_params.kind}"
+
     if unique_opts.by_args:
-        unique_key += f"&args={args}"
+        any_unique_opts = True
+        try:
+            args_dict = json.loads(insert_params.args)
+        except (TypeError, json.JSONDecodeError):
+            args_dict = insert_params.args
+        sorted_args = json.dumps(args_dict, sort_keys=True, separators=(",", ":"))
+        unique_key += f"&args={sorted_args}"
+
     if unique_opts.by_period:
+        any_unique_opts = True
         lower_period_bound = _truncate_time(
             datetime.now(timezone.utc), unique_opts.by_period
         )
         unique_key += f"&period={lower_period_bound.strftime('%FT%TZ')}"
-    if unique_opts.by_queue:
-        unique_key += f"&queue={insert_opts.queue}"
-        unique_key += f"&state={','.join(UNIQUE_STATES_DEFAULT)}"
 
-    hash_object = hashlib.sha256(unique_key.encode('utf-8'))
-    hashed_key = hash_object.hexdigest()
-    return memoryview(hashed_key.encode('utf-8'))
+    if unique_opts.by_queue:
+        any_unique_opts = True
+        unique_key += f"&queue={insert_params.queue}"
+
+    states_for_key: list[str] | list[JobState]
+    if unique_opts.by_state:
+        any_unique_opts = True
+        states_for_key = unique_opts.by_state
+    else:
+        states_for_key = UNIQUE_STATES_DEFAULT
+
+    normalized_states = _normalize_state_names(states_for_key)
+    unique_key += f"&state={','.join(normalized_states)}"
+
+    if not any_unique_opts:
+        return None, None
+
+    unique_key_hash = memoryview(sha256(unique_key.encode("utf-8")).digest())
+    unique_state = unique_opts.state_bitmask()
+    return unique_key_hash, unique_state
+
+
+def _normalize_state_names(states: list[str | JobState]) -> list[str]:
+    normalized: list[str] = []
+    for state in states:
+        if isinstance(state, JobState):
+            normalized.append(state.value)
+        else:
+            normalized.append(str(state))
+    return normalized
 
 def _make_driver_insert_params_many(
     args: List[JobArgs | InsertManyParams],
