@@ -11,7 +11,6 @@ from riverqueue import (
     InsertManyParams,
     InsertOpts,
     JobState,
-    SequenceOpts,
     UniqueOpts,
 )
 from riverqueue.driver import riversqlalchemy
@@ -104,49 +103,6 @@ class TestSyncClient:
         insert_opts = InsertOpts(queue="high_priority", unique_opts=None)
         insert_res = client.insert(simple_args, insert_opts=insert_opts)
         assert insert_res.job
-
-    def test_insert_with_sequence_opts(self, client, simple_args, test_tx):
-        _create_sequence_table(test_tx)
-
-        insert_opts = InsertOpts(
-            queue="sequence_queue",
-            sequence_opts=SequenceOpts(by_args=True, by_queue=True),
-        )
-        insert_res = client.insert(simple_args, insert_opts=insert_opts)
-
-        assert insert_res.job
-        assert _job_state_value(insert_res.job.state) == "pending"
-        metadata = _metadata_dict(insert_res.job.metadata)
-        assert metadata["seq_key"]
-
-        sequence_rows = list(
-            test_tx.execute(sqlalchemy.text("SELECT key FROM river_job_sequence"))
-        )
-        assert [row[0] for row in sequence_rows] == [metadata["seq_key"]]
-
-    def test_insert_many_with_sequence_opts(self, client, simple_args, test_tx):
-        _create_sequence_table(test_tx)
-
-        num_inserted = client.insert_many(
-            [
-                InsertManyParams(
-                    args=simple_args,
-                    insert_opts=InsertOpts(sequence_opts=SequenceOpts()),
-                )
-            ]
-        )
-
-        assert num_inserted == 1
-
-        jobs = list(dbsqlc.river_job.Querier(test_tx).job_get_all())
-        assert len(jobs) == 1
-        assert _job_state_value(jobs[0].state) == "pending"
-        metadata = _metadata_dict(jobs[0].metadata)
-
-        sequence_rows = list(
-            test_tx.execute(sqlalchemy.text("SELECT key FROM river_job_sequence"))
-        )
-        assert [row[0] for row in sequence_rows] == [metadata["seq_key"]]
 
     def test_insert_with_unique_opts_by_args(self, client, simple_args):
         insert_opts = InsertOpts(unique_opts=UniqueOpts(by_args=True))
@@ -302,27 +258,3 @@ class TestSyncClient:
     def test_insert_many_tx(self, client, simple_args, test_tx):
         num_inserted = client.insert_many_tx(test_tx, [simple_args])
         assert num_inserted == 1
-
-
-def _create_sequence_table(conn) -> None:
-    conn.execute(
-        sqlalchemy.text(
-            """
-            CREATE TEMP TABLE river_job_sequence (
-                id bigserial PRIMARY KEY,
-                key text NOT NULL,
-                created_at timestamptz DEFAULT now() NOT NULL
-            )
-            """
-        )
-    )
-
-
-def _metadata_dict(metadata):
-    if isinstance(metadata, str):
-        return json.loads(metadata)
-    return metadata
-
-
-def _job_state_value(state):
-    return getattr(state, "value", state)

@@ -2,19 +2,12 @@ from contextlib import (
     contextmanager,
 )
 from datetime import datetime, timezone
-import json
-from typing import (
-    Any,
-    Iterator,
-    List,
-    Optional,
-    Type,
-    TypeVar,
-    cast,
-)
-
-import sqlalchemy
 from sqlalchemy.engine import Connection
+from typing import (
+    Iterator,
+    Optional,
+    cast, List, TypeVar, Type,
+)
 
 from ...driver import (
     DriverProtocol,
@@ -25,16 +18,7 @@ from ...driver import (
 from ...job import AttemptError, Job, JobState
 from .dbsqlc import models, river_job, pg_misc
 
-T = TypeVar(
-    "T", river_job.JobInsertFastManyParams, river_job.JobInsertFastManyNoReturningParams
-)
-
-METADATA_KEY_SEQ_KEY = "seq_key"
-
-SEQUENCE_APPEND_MANY = """
-INSERT INTO river_job_sequence(key)
-SELECT DISTINCT unnest(:seq_keys\\:\\:text[])
-"""
+T = TypeVar("T", river_job.JobInsertFastManyParams, river_job.JobInsertFastManyNoReturningParams)
 
 
 class Executor(ExecutorProtocol):
@@ -48,23 +32,11 @@ class Executor(ExecutorProtocol):
 
     def job_insert_many(self, all_params: list[JobInsertParams]) -> List[JobInsertResult]:
         res = self.job_querier.job_insert_fast_many(_build_insert_many_params(all_params))
-        results = list(map(_result_from_row, res))
-        self._sequence_append_many_from_results(results)
-        return results
+        return list(map(_result_from_row, res))
 
     def job_insert_many_no_returning(self, all_params: list[JobInsertParams]) -> int:
-        if _has_sequence_params(all_params):
-            return len(self.job_insert_many(all_params))
-
         res = self.job_querier.job_insert_fast_many_no_returning(_build_insert_many_no_returning_params(all_params))
         return res
-
-    def _sequence_append_many_from_results(self, results: List[JobInsertResult]) -> None:
-        seq_keys = _extract_sequence_keys(results)
-        if not seq_keys:
-            return
-
-        self.conn.execute(sqlalchemy.text(SEQUENCE_APPEND_MANY), {"seq_keys": seq_keys})
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -97,36 +69,6 @@ def _result_from_row(row: river_job.JobInsertFastManyRow) -> JobInsertResult:
         job=cast(Job, row.river_job),
         unique_skipped_as_duplicated=row.unique_skipped_as_duplicate,
     )
-
-
-def _has_sequence_params(all_params: list[JobInsertParams]) -> bool:
-    return any(_metadata_seq_key(insert_params.metadata) for insert_params in all_params)
-
-
-def _extract_sequence_keys(results: List[JobInsertResult]) -> list[str]:
-    seq_keys: list[str] = []
-    seen: set[str] = set()
-
-    for result in results:
-        seq_key = _metadata_seq_key(result.job.metadata)
-        if not seq_key or seq_key in seen:
-            continue
-        seen.add(seq_key)
-        seq_keys.append(seq_key)
-
-    return seq_keys
-
-
-def _metadata_seq_key(metadata: Any) -> str | None:
-    if not metadata:
-        return None
-    if isinstance(metadata, str):
-        metadata = json.loads(metadata)
-    if not isinstance(metadata, dict):
-        return None
-
-    seq_key = metadata.get(METADATA_KEY_SEQ_KEY)
-    return seq_key if isinstance(seq_key, str) and seq_key else None
 
 
 def _build_insert_many_params(
