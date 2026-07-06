@@ -1,22 +1,23 @@
+import base64
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import re
 from typing import (
+    Any,
+    List,
     Optional,
     Protocol,
-    List,
     cast,
     runtime_checkable,
 )
 
-from riverqueue.insert_opts import InsertOpts, UniqueOpts
+from riverqueue.insert_opts import InsertOpts, SequenceOpts, UniqueOpts
 
 from .driver import (
     JobInsertParams,
     DriverProtocol,
-    ExecutorProtocol,
 )
 from .job import Job, JobState
 from .fnv import fnv1_hash
@@ -36,6 +37,10 @@ QUEUE_DEFAULT: str = "default"
 """
 Default queue for a job.
 """
+
+METADATA_KEY_SEQ_KEY: str = "seq_key"
+METADATA_KEY_SEQ_CONTINUE_CANCELLED: str = "seq_continue_cancelled"
+METADATA_KEY_SEQ_CONTINUE_DISCARDED: str = "seq_continue_discarded"
 
 UNIQUE_STATES_DEFAULT: list[str] = [
     JobState.AVAILABLE.value,
@@ -360,12 +365,11 @@ def _make_driver_insert_params(
     args_json = args.to_json()
     assert args_json is not None, "args should return non-nil from `to_json`"
 
-    args_insert_opts = InsertOpts()
-    if isinstance(args, JobArgsWithInsertOpts):
-        args_insert_opts = args.insert_opts
+    args_insert_opts = _get_args_insert_opts(args)
 
     scheduled_at = insert_opts.scheduled_at or args_insert_opts.scheduled_at
     unique_opts = insert_opts.unique_opts or args_insert_opts.unique_opts
+    sequence_opts = insert_opts.sequence_opts or args_insert_opts.sequence_opts
     queue = insert_opts.queue or args_insert_opts.queue or QUEUE_DEFAULT
 
     insert_params = JobInsertParams(
@@ -386,7 +390,84 @@ def _make_driver_insert_params(
         insert_params.unique_key = unique_key
         insert_params.unique_state = unique_state
 
+    if sequence_opts:
+        _add_sequence_metadata(insert_params, sequence_opts)
+
     return insert_params
+
+
+def _get_args_insert_opts(args: JobArgs) -> InsertOpts:
+    args_insert_opts = getattr(args, "insert_opts", None)
+    if args_insert_opts is None:
+        return InsertOpts()
+
+    if isinstance(args_insert_opts, InsertOpts):
+        return args_insert_opts
+    return args_insert_opts()
+
+
+def _add_sequence_metadata(
+    insert_params: JobInsertParams, sequence_opts: SequenceOpts
+) -> None:
+    insert_params.state = JobState.PENDING.value
+
+    metadata = _metadata_to_dict(insert_params.metadata)
+    metadata[METADATA_KEY_SEQ_KEY] = _build_sequence_key(insert_params, sequence_opts)
+    if sequence_opts.continue_on_cancelled:
+        metadata[METADATA_KEY_SEQ_CONTINUE_CANCELLED] = True
+    if sequence_opts.continue_on_discarded:
+        metadata[METADATA_KEY_SEQ_CONTINUE_DISCARDED] = True
+    insert_params.metadata = json.dumps(
+        metadata,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _metadata_to_dict(metadata: Any) -> dict[str, Any]:
+    if metadata is None or metadata == "":
+        return {}
+    if isinstance(metadata, dict):
+        return dict(metadata)
+    if isinstance(metadata, str):
+        return cast(dict[str, Any], json.loads(metadata))
+    return cast(dict[str, Any], metadata)
+
+
+def _build_sequence_key(
+    insert_params: JobInsertParams, sequence_opts: SequenceOpts
+) -> str:
+    sequence_key = ""
+
+    if not sequence_opts.exclude_kind:
+        sequence_key += f"&kind={insert_params.kind}"
+
+    if sequence_opts.by_args:
+        sequence_key += f"&args={_sequence_args_json(insert_params.args, sequence_opts)}"
+
+    if sequence_opts.by_queue:
+        sequence_key += f"&queue={insert_params.queue}"
+
+    sequence_key_hash = sha256(sequence_key.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(sequence_key_hash).decode("ascii")
+
+
+def _sequence_args_json(args_json: Any, sequence_opts: SequenceOpts) -> str:
+    args_dict = json.loads(args_json) if isinstance(args_json, str) else args_json
+    if not isinstance(args_dict, dict):
+        return "{}"
+
+    keys = sorted(args_dict.keys())
+    if sequence_opts.by_args is not True:
+        keys = sorted(key for key in sequence_opts.by_args or [] if key in args_dict)
+
+    fields = [
+        json.dumps(key, separators=(",", ":"), ensure_ascii=False)
+        + ":"
+        + json.dumps(args_dict[key], separators=(",", ":"), ensure_ascii=False)
+        for key in keys
+    ]
+    return "{" + ",".join(fields) + "}"
 
 
 def _build_unique_key_and_state(

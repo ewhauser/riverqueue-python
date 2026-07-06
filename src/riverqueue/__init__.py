@@ -12,6 +12,7 @@ from .client import (
 from .client import (
     InsertOpts as InsertOpts,
     InsertResult as InsertResult,
+    SequenceOpts as SequenceOpts,
     UniqueOpts as UniqueOpts,
 )
 from .job import (

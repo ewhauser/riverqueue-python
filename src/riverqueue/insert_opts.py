@@ -65,6 +65,48 @@ class InsertOpts:
     never treated as unique.
     """
 
+    sequence_opts: Optional["SequenceOpts"] = None
+    """
+    Options relating to River Pro sequences. No sequence options means that the
+    job is not inserted into a sequence.
+    """
+
+
+@dataclass
+class SequenceOpts:
+    """
+    Parameters for River Pro sequences.
+
+    When present, jobs are inserted in the pending state and become available
+    only when they are next in their sequence.
+    """
+
+    by_args: Optional[Literal[True] | list[str]] = None
+    """
+    Indicates that encoded args should be used to compute the sequence key. If
+    a list of strings is provided, only those top-level JSON keys are included.
+    """
+
+    by_queue: Optional[Literal[True]] = None
+    """
+    Indicates that sequences should be partitioned by queue.
+    """
+
+    continue_on_cancelled: Optional[Literal[True]] = None
+    """
+    Indicates that the sequence should continue if a job is cancelled.
+    """
+
+    continue_on_discarded: Optional[Literal[True]] = None
+    """
+    Indicates that the sequence should continue if a job is discarded.
+    """
+
+    exclude_kind: Optional[Literal[True]] = None
+    """
+    Omits job kind from the sequence key.
+    """
+
 
 @dataclass
 class UniqueOpts:
